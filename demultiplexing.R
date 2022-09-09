@@ -30,7 +30,7 @@ library(gridExtra)
 createSeurat <- function(f) {
   hdf5_obj <- Read10X_h5(f) #obj contains gene expression and antibody capture data 
   project_name <- substring(str_remove(files, gsub('.*s[0-9]', '\\1',f)), 6)
-  seurat_obj <- CreateSeuratObject(counts = hdf5_obj, project = project_name,
+  seurat_obj <- CreateSeuratObject(counts = hdf5_obj$'Gene Expression', project = project_name,
   min.cells = 3, min.features = 200)
 }
 
