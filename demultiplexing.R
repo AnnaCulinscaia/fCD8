@@ -18,6 +18,7 @@ library(RColorBrewer)
 library(msigdbr)
 library(fgsea)
 library(gridExtra)
+library(ggplot2)
 
 
 
@@ -113,31 +114,31 @@ remove(proportion)
 #table(mDemux$HTO_classification.global)
 
 
- # Group cells based on the max HTO signal
- Idents(mSeurat) <- "HTO_maxID"
- RidgePlot(mSeurat, assay = "HTO", features = rownames(mSeurat[["HTO"]])[1:4], ncol = 2)
+# Group cells based on the max HTO signal
+Idents(mSeurat) <- "HTO_maxID"
+RidgePlot(mSeurat, assay = "HTO", features = rownames(mSeurat[["HTO"]])[1:4], ncol = 2)
  
  mSeurat$sample <- paste(mSeurat$orig.ident, mSeurat$hash.ID)
  Idents(mSeurat) <- "sample"
 
- mSeurat <- subset(
-   mSeurat, idents = c("s1 Hashtag1","s1 Hashtag2",
-                       "s2 Hashtag1","s2 Hashtag2",
-                       "s3 Hashtag3","s3 Hashtag4",
-                       "s4 Hashtag3","s4 Hashtag4",
-                       "s5 Hashtag1","s5 Hashtag2",
-                       "s6 Hashtag1","s6 Hashtag2",
-                       "s7 Hashtag3","s7 Hashtag4",
-                       "s8 Hashtag3","s8 Hashtag4"))
- print(paste("Number of cells:", ncol(mSeurat)))
+mSeurat <- subset(
+ mSeurat, idents = c("s1 Hashtag1","s1 Hashtag2",
+                      "s2 Hashtag1","s2 Hashtag2",
+                      "s3 Hashtag3","s3 Hashtag4",
+                      "s4 Hashtag3","s4 Hashtag4",
+                      "s5 Hashtag1","s5 Hashtag2",
+                      "s6 Hashtag1","s6 Hashtag2",
+                      "s7 Hashtag3","s7 Hashtag4",
+                      "s8 Hashtag3","s8 Hashtag4"))
+print(paste("Number of cells:", ncol(mSeurat)))
 
- mSeurat$sample <- stringi::stri_replace_all_regex(
-   mSeurat$sample,
-   sort(unique(mSeurat$sample)),
-   c("Dnr58_Tonsil_CXCR5positive", "Dnr58_Blood_CXCR5positive", 
+mSeurat$sample <- stringi::stri_replace_all_regex(
+  mSeurat$sample,
+  sort(unique(mSeurat$sample)),
+  c("Dnr58_Tonsil_CXCR5positive", "Dnr58_Blood_CXCR5positive", 
      "Dnr58_Tonsil_CXCR5negative", "Dnr58_Blood_CXCR5negative", 
      
-     "Dnr69_Tonsil_CXCR5positive", "Dnr69_Blood_CXCR5positive", 
+    "Dnr69_Tonsil_CXCR5positive", "Dnr69_Blood_CXCR5positive", 
      "Dnr69_Tonsil_CXCR5negative", "Dnr69_Blood_CXCR5negative", 
      
      "Dnr72_Tonsil_CXCR5positive", "Dnr72_Blood_CXCR5positive", 
@@ -148,4 +149,75 @@ remove(proportion)
    vectorize=FALSE)
  Idents(mSeurat) <- "sample"
  table(mSeurat$sample)
+ 
+ # Add patient and timepoint by splitting from sample metadata
+ mSeurat$Patient <- t(as.data.frame(strsplit(mSeurat$sample, "_")))[,1]
+ mSeurat$Tissue <- t(as.data.frame(strsplit(mSeurat$sample, "_")))[,2]
+ mSeurat$Group <- t(as.data.frame(strsplit(mSeurat$sample, "_")))[,3]
+
+ locations <- c("~/22-08-ORBCXCR5/cellranger/e19s1_multi-part/vdj_t/",
+                "~/22-08-ORBCXCR5/cellranger/e19s2_multi-part/vdj_t/",
+                "~/22-08-ORBCXCR5/cellranger/e19s3_multi-part/vdj_t/",
+                "~/22-08-ORBCXCR5/cellranger/e19s4_multi-part/vdj_t/",
+                "~/22-08-ORBCXCR5/cellranger/e19s5_multi-part/vdj_t/",
+                "~/22-08-ORBCXCR5/cellranger/e19s6_multi-part/vdj_t/",
+                "~/22-08-ORBCXCR5/cellranger/e19s7_multi-part/vdj_t/",
+                "~/22-08-ORBCXCR5/cellranger/e19s8_multi-part/vdj_t/")
+ suffices <- c("1", "2", "3", "4", 
+               "5", "6", "7", "8")
+ 
+ output <- list()
+ original_meta <- mSeurat@meta.data
+ for (i in 1:length(locations)){
+   # get the cells belonging to the current set
+   positions <- grep(suffices[i], colnames(mSeurat))
+   # temporarily adjust to make cell name suffix the same
+   TCR <- mSeurat[,positions]
+   cellnames <- colnames(TCR)
+   TCR <- RenameCells(TCR, new.names = gsub(suffices[i], "1", cellnames))
+   # import the tcr
+   TCR <- import_vdj(TCR, vdj_dir = locations[i])
+   # change the cell name back and store the data
+   output[[i]] <- RenameCells(TCR, new.names = cellnames)@meta.data
+ }
+ 
+ meta_w_TCR <- do.call(rbind, output)
+ # make the order of the cells the same
+ meta_w_TCR <- meta_w_TCR[rownames(mSeurat@meta.data),]
+ mSeurat@meta.data <- meta_w_TCR # add the collated information
+ mSeurat@meta.data$clonotype_id <- NULL # No longer useful because id is repeated between sets
+ remove(meta_w_TCR, i, suffices, locations, cellnames, TCR, output, original_meta, positions)
+ 
+ ###########################################
+ # For cases with three or 4 chains, only take the most highly expressed TRA TRB
+ 
+ # Perform clean up and filtering of TCR metadata information.
+ # Take only the most highly expressed TCR in instances of >2 chains
+ cleanMeta <- mSeurat@meta.data
+ col_to_edit <- c("v_gene","d_gene","j_gene", "c_gene", "chains","cdr3",
+                  "cdr3_nt", "reads", "umis", "productive", "full_length")
+ 
+ # Looks like there is not the case of chains == TRA;TRA or TRB;TRB
+ # Which makes things easier for me
+ rows_to_edit <- which(cleanMeta$n_chains > 2)
+ for (r in rows_to_edit){
+   expressions <- as.numeric(paste0(
+     unlist(strsplit(cleanMeta[r, "umis"], ";")),
+     ".",
+     unlist(strsplit(cleanMeta[r, "reads"], ";"))))
+   
+   is.TRA <- which(unlist(strsplit(cleanMeta[r, "chains"], ";")) == "TRA")
+   is.TRB <- which(unlist(strsplit(cleanMeta[r, "chains"], ";")) == "TRB")
+   to.keep <- c(which(expressions == max(expressions[is.TRA])),
+                which(expressions == max(expressions[is.TRB])))
+   
+   for (x in col_to_edit){
+     cleanMeta[r,x] <- paste(unlist(strsplit(cleanMeta[r,x], ";"))[to.keep],
+                             collapse = ";")
+   }
+ }
+ mSeurat@meta.data <- cleanMeta
+ remove(cleanMeta, rows_to_edit, col_to_edit, r, expressions,
+        is.TRA, is.TRB, to.keep, x)
+
  
